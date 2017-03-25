@@ -32,7 +32,8 @@
     "**/.*",
     "bower_components",
     "typings",
-    "ol3-mapquest/examples/**",
+    "ol3-mapquest/examples",
+    "ol3-mapquest/tests",
     "*.html",
     "*.md",
     "*.yml"
