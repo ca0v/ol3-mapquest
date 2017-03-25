@@ -1,6 +1,7 @@
 import { MapQuestDirections } from "../directions-proxy";
 
 const MapQuestKey = "cwm3pF5yuEGNp54sh96TF0irs5kCLd5y";
+const serviceUrl = "//www.mapquestapi.com/directions/v2/route";
 
 export function run(options?: {
     from: string;
@@ -14,14 +15,14 @@ export function run(options?: {
         };
     }
 
-    let serviceUrl = `http://www.mapquestapi.com/directions/v2/route`;
-    let request = {
-        key: MapQuestKey,
+
+    return MapQuestDirections.create({
+        url: serviceUrl,
+        key: MapQuestKey
+    }).directions({
         from: options.from,
         to: options.to
-    };
-
-    return new MapQuestDirections().directions(serviceUrl, request).then(result => {
+    }).then(result => {
         console.log("directions", result);
         result.route.legs.forEach(leg => {
             console.log(leg.destNarrative, leg.maneuvers.map(m => m.narrative).join("\n\t"));

@@ -216,18 +216,30 @@ export module MapQuestDirections {
 
 export class MapQuestDirections {
 
+    public static DEFAULT_OPTIONS = {
+        url: '//www.mapquestapi.com/directions/v2/route',
+        key: '[YOUR-MAPQUEST-API-KEY]'
+    }
+
+    static create(options: typeof MapQuestDirections.DEFAULT_OPTIONS) {
+        return new MapQuestDirections(options);
+    }
+
+    private constructor(public options = MapQuestDirections.DEFAULT_OPTIONS) {
+
+    }
+
     private sessionId = "";
 
-    directions(url: string, data: {
-        key: string;
+    directions(data: MapQuestDirections.Options & {
         from: string;
         to: string | string[];
-        session?: string;
         unit?: string;
         avoids?: string;
     }) {
 
         let req = $.extend({
+            key: this.options.key,
             outFormat: "json",
             unit: "m",
             routeType: "fastest",
@@ -257,7 +269,7 @@ export class MapQuestDirections {
 
         if (this.sessionId) req.sessionId = this.sessionId;
 
-        return mapquest<MapQuestDirections.Response>(url, req).then(response => {
+        return mapquest<MapQuestDirections.Response>(this.options.url, req).then(response => {
             this.sessionId = response.route.sessionId;
             return response;
         });
