@@ -3,6 +3,12 @@ import { MapQuestDirections } from "../directions-proxy";
 const MapQuestKey = "cwm3pF5yuEGNp54sh96TF0irs5kCLd5y";
 const serviceUrl = "//www.mapquestapi.com/directions/v2/route";
 
+const SAMPLE_ERROR = {
+    "copyright": { "text": "© 2017 MapQuest, Inc.", "imageUrl": "http://api.mqcdn.com/res/mqlogo.gif", "imageAltText": "© 2017 MapQuest, Inc." },
+    "statuscode": 602,
+    "messages": ["Unable to calculate route."]
+};
+
 export function run(options?: {
     from: string;
     to: string | string[];

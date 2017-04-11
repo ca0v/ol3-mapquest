@@ -1,3 +1,8 @@
+var __extends = (this && this.__extends) || function (d, b) {
+    for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p];
+    function __() { this.constructor = d; }
+    d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+};
 define("bower_components/ol3-fun/ol3-fun/common", ["require", "exports"], function (require, exports) {
     "use strict";
     /**
@@ -327,7 +332,7 @@ define("bower_components/ol3-fun/index", ["require", "exports", "bower_component
     });
     return index;
 });
-define("ol3-mapquest/directions-proxy", ["require", "exports", "jquery"], function (require, exports, $) {
+define("ol3-mapquest/directions-proxy", ["require", "exports", "jquery", "bower_components/ol3-fun/index"], function (require, exports, $, ol3_fun_1) {
     "use strict";
     /**
      * http://www.mapquestapi.com/directions/v2/route?key=cwm3pF5yuEGNp54sh96TF0irs5kCLd5y&from=Lancaster,PA&to=York,PA&callback=define
@@ -360,12 +365,17 @@ define("ol3-mapquest/directions-proxy", ["require", "exports", "jquery"], functi
         return d;
     }
     var MapQuestDirections = (function () {
-        function MapQuestDirections() {
+        function MapQuestDirections(options) {
             this.sessionId = "";
+            this.options = ol3_fun_1.defaults(options, MapQuestDirections.DEFAULT_OPTIONS);
         }
-        MapQuestDirections.prototype.directions = function (url, data) {
+        MapQuestDirections.create = function (options) {
+            return new MapQuestDirections(options);
+        };
+        MapQuestDirections.prototype.directions = function (data) {
             var _this = this;
-            var req = $.extend({
+            var req = ol3_fun_1.defaults(data, {
+                key: this.options.key,
                 outFormat: "json",
                 unit: "m",
                 routeType: "fastest",
@@ -390,17 +400,19 @@ define("ol3-mapquest/directions-proxy", ["require", "exports", "jquery"], functi
                 generalize: 10,
                 drivingStyle: "normal",
                 highwayEfficiency: 20,
-                manMaps: false
-            }, data);
-            if (this.sessionId)
-                req.sessionId = this.sessionId;
-            return mapquest(url, req).then(function (response) {
+                manMaps: false,
+            });
+            return mapquest(this.options.url, req).then(function (response) {
                 _this.sessionId = response.route.sessionId;
                 return response;
             });
         };
         return MapQuestDirections;
     }());
+    MapQuestDirections.DEFAULT_OPTIONS = {
+        url: '//www.mapquestapi.com/directions/v2/route',
+        key: '[YOUR-MAPQUEST-API-KEY]'
+    };
     exports.MapQuestDirections = MapQuestDirections;
 });
 define("ol3-mapquest/geocoding-proxy", ["require", "exports", "jquery"], function (require, exports, $) {
@@ -709,12 +721,1568 @@ define("index", ["require", "exports", "ol3-mapquest/directions-proxy", "ol3-map
     };
     return API;
 });
+define("bower_components/ol3-fun/ol3-fun/snapshot", ["require", "exports", "openlayers"], function (require, exports, ol) {
+    "use strict";
+    function getStyle(feature) {
+        var style = feature.getStyle();
+        if (!style) {
+            var styleFn = feature.getStyleFunction();
+            if (styleFn) {
+                style = styleFn(0);
+            }
+        }
+        if (!style) {
+            style = new ol.style.Style({
+                text: new ol.style.Text({
+                    text: "?"
+                })
+            });
+        }
+        if (!Array.isArray(style))
+            style = [style];
+        return style;
+    }
+    var Snapshot = (function () {
+        function Snapshot() {
+        }
+        Snapshot.render = function (canvas, feature) {
+            feature = feature.clone();
+            var geom = feature.getGeometry();
+            var extent = geom.getExtent();
+            var isPoint = extent[0] === extent[2];
+            var _a = ol.extent.getCenter(extent), dx = _a[0], dy = _a[1];
+            var scale = isPoint ? 1 : Math.min(canvas.width / ol.extent.getWidth(extent), canvas.height / ol.extent.getHeight(extent));
+            geom.translate(-dx, -dy);
+            geom.scale(scale, -scale);
+            geom.translate(canvas.width / 2, canvas.height / 2);
+            var vtx = ol.render.toContext(canvas.getContext("2d"));
+            var styles = getStyle(feature);
+            if (!Array.isArray(styles))
+                styles = [styles];
+            styles.forEach(function (style) { return vtx.drawFeature(feature, style); });
+        };
+        /**
+         * convert features into data:image/png;base64;
+         */
+        Snapshot.snapshot = function (feature) {
+            var canvas = document.createElement("canvas");
+            var geom = feature.getGeometry();
+            this.render(canvas, feature);
+            return canvas.toDataURL();
+        };
+        return Snapshot;
+    }());
+    return Snapshot;
+});
+define("bower_components/ol3-grid/ol3-grid/ol3-grid", ["require", "exports", "openlayers", "bower_components/ol3-fun/index", "bower_components/ol3-fun/ol3-fun/snapshot", "bower_components/ol3-fun/ol3-fun/navigation"], function (require, exports, ol, ol3_fun_2, Snapshot, navigation_1) {
+    "use strict";
+    var grid_html = "\n<div class='ol-grid-container'>\n    <table class='ol-grid-table'>\n        <tbody><tr><td/></tr></tbody>\n    </table>\n</div>\n";
+    var olcss = {
+        CLASS_CONTROL: 'ol-control',
+        CLASS_UNSELECTABLE: 'ol-unselectable',
+        CLASS_UNSUPPORTED: 'ol-unsupported',
+        CLASS_HIDDEN: 'ol-hidden'
+    };
+    var expando = {
+        right: '»',
+        left: '«'
+    };
+    var Grid = (function (_super) {
+        __extends(Grid, _super);
+        function Grid(options) {
+            var _this = this;
+            if (options.hideButton) {
+                options.canCollapse = false;
+                options.autoCollapse = false;
+                options.expanded = true;
+            }
+            _this = _super.call(this, {
+                element: options.element,
+                target: options.target
+            }) || this;
+            _this.options = options;
+            _this.features = new ol.source.Vector();
+            _this.featureMap = [];
+            _this.handlers = [];
+            _this.cssin();
+            var button = _this.button = document.createElement('button');
+            button.setAttribute('type', 'button');
+            button.title = options.placeholderText;
+            options.element.appendChild(button);
+            if (options.hideButton) {
+                button.style.display = "none";
+            }
+            var grid = ol3_fun_2.html(grid_html.trim());
+            _this.grid = grid.getElementsByClassName("ol-grid-table")[0];
+            options.element.appendChild(grid);
+            if (_this.options.autoCollapse) {
+                button.addEventListener("mouseover", function () {
+                    !options.expanded && _this.expand();
+                });
+                button.addEventListener("focus", function () {
+                    !options.expanded && _this.expand();
+                });
+                button.addEventListener("blur", function () {
+                    options.expanded && _this.collapse();
+                });
+            }
+            button.addEventListener("click", function () {
+                options.expanded ? _this.collapse() : _this.expand();
+            });
+            options.expanded ? _this.expand() : _this.collapse();
+            // render
+            _this.features.on(["addfeature", "addfeatures"], ol3_fun_2.debounce(function () { return _this.redraw(); }));
+            if (_this.options.currentExtent) {
+                _this.options.map.getView().on(["change:center", "change:resolution"], ol3_fun_2.debounce(function () { return _this.redraw(); }));
+            }
+            if (_this.options.layers) {
+                _this.options.layers.forEach(function (l) {
+                    var source = l.getSource();
+                    source.on("addfeature", function (args) {
+                        _this.add(args.feature, l);
+                    });
+                    source.on("removefeature", function (args) {
+                        _this.remove(args.feature, l);
+                    });
+                });
+            }
+            return _this;
+        }
+        Grid.create = function (options) {
+            // provide computed and static defaults
+            options = ol3_fun_2.defaults(ol3_fun_2.mixin({
+                openedText: options.position && -1 < options.position.indexOf("left") ? expando.left : expando.right,
+                closedText: options.position && -1 < options.position.indexOf("left") ? expando.right : expando.left,
+            }, options), Grid.DEFAULT_OPTIONS);
+            var element = document.createElement('div');
+            element.className = options.className + " " + options.position + " " + olcss.CLASS_UNSELECTABLE + " " + olcss.CLASS_CONTROL;
+            var gridOptions = ol3_fun_2.mixin({
+                map: options.map,
+                element: element,
+                expanded: false
+            }, options);
+            var grid = new Grid(gridOptions);
+            if (options.map) {
+                options.map.addControl(grid);
+            }
+            grid.handlers.push(function () { return element.remove(); });
+            return grid;
+        };
+        Grid.prototype.destroy = function () {
+            this.handlers.forEach(function (h) { return h(); });
+            this.setTarget(null);
+        };
+        Grid.prototype.setPosition = function (position) {
+            var _this = this;
+            this.options.position.split(' ')
+                .forEach(function (k) { return _this.options.element.classList.remove(k); });
+            position.split(' ')
+                .forEach(function (k) { return _this.options.element.classList.add(k); });
+            this.options.position = position;
+        };
+        Grid.prototype.cssin = function () {
+            var className = this.options.className;
+            var positions = ol3_fun_2.pair("top left right bottom".split(" "), ol3_fun_2.range(24))
+                .map(function (pos) { return "." + className + "." + (pos[0] + (-pos[1] || '')) + " { " + pos[0] + ":" + (0.5 + pos[1]) + "em; }"; });
+            this.handlers.push(ol3_fun_2.cssin(className, "\n." + className + " ." + className + "-container {\n    max-height: 16em;\n    overflow-y: auto;\n}\n." + className + " ." + className + "-container.ol-hidden {\n    display: none;\n}\n." + className + " .feature-row {\n    cursor: pointer;\n}\n." + className + " .feature-row:hover {\n    background: black;\n    color: white;\n}\n." + className + " .feature-row:focus {\n    background: #ccc;\n    color: black;\n}\n" + positions.join('\n') + "\n"));
+        };
+        Grid.prototype.redraw = function () {
+            var _this = this;
+            var options = this.options;
+            var map = options.map;
+            var extent = map.getView().calculateExtent(map.getSize());
+            var tbody = this.grid.tBodies[0];
+            tbody.innerHTML = "";
+            var features = [];
+            if (this.options.currentExtent) {
+                this.features.forEachFeatureInExtent(extent, function (f) { return void features.push(f); });
+            }
+            else {
+                this.features.forEachFeature(function (f) { return void features.push(f); });
+            }
+            features.forEach(function (feature) {
+                var tr = document.createElement("tr");
+                tr.tabIndex = 0;
+                tr.className = "feature-row";
+                if (_this.options.showIcon) {
+                    var td = document.createElement("td");
+                    var canvas = document.createElement("canvas");
+                    td.appendChild(canvas);
+                    canvas.className = "icon";
+                    canvas.width = 160;
+                    canvas.height = 64;
+                    tr.appendChild(td);
+                    Snapshot.render(canvas, feature);
+                }
+                if (_this.options.labelAttributeName) {
+                    var td = document.createElement("td");
+                    var label = ol3_fun_2.html("<label class=\"label\">" + feature.get(_this.options.labelAttributeName) + "</label>");
+                    td.appendChild(label);
+                    tr.appendChild(td);
+                }
+                ["click", "keypress"].forEach(function (k) {
+                    return tr.addEventListener(k, function () {
+                        if (_this.options.autoCollapse) {
+                            _this.collapse();
+                        }
+                        _this.dispatchEvent({
+                            type: "feature-click",
+                            feature: feature,
+                            row: tr[0]
+                        });
+                        if (_this.options.autoPan) {
+                            navigation_1.zoomToFeature(map, feature, {
+                                duration: options.zoomDuration,
+                                padding: options.zoomPadding,
+                                minResolution: options.zoomMinResolution
+                            });
+                        }
+                    });
+                });
+                tbody.appendChild(tr);
+            });
+        };
+        Grid.prototype.add = function (feature, layer) {
+            var _this = this;
+            var style = feature.getStyle();
+            if (!style && layer && this.options.showIcon) {
+                style = layer.getStyleFunction()(feature, 0);
+                // need to capture style but don't want to effect original feature
+                var originalFeature_1 = feature;
+                feature = originalFeature_1.clone();
+                feature.setStyle(style);
+                // how to keep geometry in sync?
+                originalFeature_1.on("change", ol3_fun_2.debounce(function () {
+                    feature.setGeometry(originalFeature_1.getGeometry());
+                    _this.redraw();
+                }));
+                this.featureMap.push({ f1: originalFeature_1, f2: feature });
+            }
+            this.features.addFeature(feature);
+        };
+        Grid.prototype.remove = function (feature, layer) {
+            var _this = this;
+            this.featureMap.filter(function (map) { return map.f1 === feature; }).forEach(function (m) { return _this.features.removeFeature(m.f2); });
+            this.redraw();
+        };
+        Grid.prototype.clear = function () {
+            var tbody = this.grid.tBodies[0];
+            tbody.innerHTML = "";
+        };
+        Grid.prototype.collapse = function () {
+            var options = this.options;
+            if (!options.canCollapse)
+                return;
+            options.expanded = false;
+            this.grid.parentElement.classList.toggle(olcss.CLASS_HIDDEN, true);
+            this.button.classList.toggle(olcss.CLASS_HIDDEN, false);
+            this.button.innerHTML = options.closedText;
+        };
+        Grid.prototype.expand = function () {
+            var options = this.options;
+            options.expanded = true;
+            this.grid.parentElement.classList.toggle(olcss.CLASS_HIDDEN, false);
+            this.button.classList.toggle(olcss.CLASS_HIDDEN, true);
+            this.button.innerHTML = options.openedText;
+        };
+        Grid.prototype.on = function (type, cb) {
+            return _super.prototype.on.call(this, type, cb);
+        };
+        return Grid;
+    }(ol.control.Control));
+    Grid.DEFAULT_OPTIONS = {
+        className: 'ol-grid',
+        position: 'top right',
+        expanded: false,
+        autoCollapse: true,
+        autoPan: true,
+        canCollapse: true,
+        currentExtent: true,
+        hideButton: false,
+        showIcon: false,
+        labelAttributeName: "",
+        closedText: expando.right,
+        openedText: expando.left,
+        // what to show on the tooltip
+        placeholderText: 'Features',
+        // zoom-to-feature options
+        zoomDuration: 2000,
+        zoomPadding: 256,
+        zoomMinResolution: 1 / Math.pow(2, 22)
+    };
+    exports.Grid = Grid;
+});
+define("bower_components/ol3-grid/index", ["require", "exports", "bower_components/ol3-grid/ol3-grid/ol3-grid"], function (require, exports, Grid) {
+    "use strict";
+    return Grid;
+});
+define("bower_components/ol3-symbolizer/ol3-symbolizer/common/ajax", ["require", "exports", "jquery"], function (require, exports, $) {
+    "use strict";
+    var Ajax = (function () {
+        function Ajax(url) {
+            this.url = url;
+            this.options = {
+                use_json: true,
+                use_cors: true
+            };
+        }
+        Ajax.prototype.jsonp = function (args, url) {
+            if (url === void 0) { url = this.url; }
+            var d = $.Deferred();
+            args["callback"] = "define";
+            var uri = url + "?" + Object.keys(args).map(function (k) { return k + "=" + args[k]; }).join('&');
+            require([uri], function (data) { return d.resolve(data); });
+            return d;
+        };
+        // http://www.html5rocks.com/en/tutorials/cors/    
+        Ajax.prototype.ajax = function (method, args, url) {
+            if (url === void 0) { url = this.url; }
+            var isData = method === "POST" || method === "PUT";
+            var isJson = this.options.use_json;
+            var isCors = this.options.use_cors;
+            var d = $.Deferred();
+            var client = new XMLHttpRequest();
+            if (isCors)
+                client.withCredentials = true;
+            var uri = url;
+            var data = null;
+            if (args) {
+                if (isData) {
+                    data = JSON.stringify(args);
+                }
+                else {
+                    uri += '?';
+                    var argcount = 0;
+                    for (var key in args) {
+                        if (args.hasOwnProperty(key)) {
+                            if (argcount++) {
+                                uri += '&';
+                            }
+                            uri += encodeURIComponent(key) + '=' + encodeURIComponent(args[key]);
+                        }
+                    }
+                }
+            }
+            client.open(method, uri, true);
+            if (isData && isJson)
+                client.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+            client.send(data);
+            client.onload = function () {
+                console.log("content-type", client.getResponseHeader("Content-Type"));
+                if (client.status >= 200 && client.status < 300) {
+                    isJson = isJson || 0 === client.getResponseHeader("Content-Type").indexOf("application/json");
+                    d.resolve(isJson ? JSON.parse(client.response) : client.response);
+                }
+                else {
+                    d.reject(client.statusText);
+                }
+            };
+            client.onerror = function () { return d.reject(client.statusText); };
+            // Return the promise
+            return d;
+        };
+        Ajax.prototype.get = function (args) {
+            return this.ajax('GET', args);
+        };
+        Ajax.prototype.post = function (args) {
+            return this.ajax('POST', args);
+        };
+        Ajax.prototype.put = function (args) {
+            return this.ajax('PUT', args);
+        };
+        Ajax.prototype.delete = function (args) {
+            return this.ajax('DELETE', args);
+        };
+        return Ajax;
+    }());
+    return Ajax;
+});
+define("bower_components/ol3-symbolizer/ol3-symbolizer/ags/ags-catalog", ["require", "exports", "bower_components/ol3-symbolizer/ol3-symbolizer/common/ajax"], function (require, exports, Ajax) {
+    "use strict";
+    /**
+     * assigns undefined values
+     */
+    function defaults(a) {
+        var b = [];
+        for (var _i = 1; _i < arguments.length; _i++) {
+            b[_i - 1] = arguments[_i];
+        }
+        b.filter(function (b) { return !!b; }).forEach(function (b) {
+            Object.keys(b).filter(function (k) { return a[k] === undefined; }).forEach(function (k) { return a[k] = b[k]; });
+        });
+        return a;
+    }
+    var Catalog = (function () {
+        function Catalog(url) {
+            this.ajax = new Ajax(url);
+        }
+        Catalog.prototype.about = function (data) {
+            var req = defaults({
+                f: "pjson"
+            }, data);
+            return this.ajax.jsonp(req);
+        };
+        Catalog.prototype.aboutFolder = function (folder) {
+            var ajax = new Ajax(this.ajax.url + "/" + folder);
+            var req = {
+                f: "pjson"
+            };
+            return ajax.jsonp(req);
+        };
+        Catalog.prototype.aboutFeatureServer = function (name) {
+            var ajax = new Ajax(this.ajax.url + "/" + name + "/FeatureServer");
+            var req = {
+                f: "pjson"
+            };
+            return defaults(ajax.jsonp(req), { url: ajax.url });
+        };
+        Catalog.prototype.aboutMapServer = function (name) {
+            var ajax = new Ajax(this.ajax.url + "/" + name + "/MapServer");
+            var req = {
+                f: "pjson"
+            };
+            return defaults(ajax.jsonp(req), { url: ajax.url });
+        };
+        Catalog.prototype.aboutLayer = function (layer) {
+            var ajax = new Ajax(this.ajax.url + "/" + layer);
+            var req = {
+                f: "pjson"
+            };
+            return ajax.jsonp(req);
+        };
+        return Catalog;
+    }());
+    exports.Catalog = Catalog;
+});
+define("bower_components/ol3-symbolizer/ol3-symbolizer/format/base", ["require", "exports"], function (require, exports) {
+    "use strict";
+});
+define("bower_components/ol3-symbolizer/ol3-symbolizer/format/ol3-symbolizer", ["require", "exports", "openlayers"], function (require, exports, ol) {
+    "use strict";
+    function doif(v, cb) {
+        if (v !== undefined && v !== null)
+            cb(v);
+    }
+    function mixin(a, b) {
+        Object.keys(b).forEach(function (k) { return a[k] = b[k]; });
+        return a;
+    }
+    var StyleConverter = (function () {
+        function StyleConverter() {
+        }
+        StyleConverter.prototype.fromJson = function (json) {
+            return this.deserializeStyle(json);
+        };
+        StyleConverter.prototype.toJson = function (style) {
+            return this.serializeStyle(style);
+        };
+        /**
+         * uses the interior point of a polygon when rendering a 'point' style
+         */
+        StyleConverter.prototype.setGeometry = function (feature) {
+            var geom = feature.getGeometry();
+            if (geom instanceof ol.geom.Polygon) {
+                geom = geom.getInteriorPoint();
+            }
+            return geom;
+        };
+        StyleConverter.prototype.assign = function (obj, prop, value) {
+            //let getter = prop[0].toUpperCase() + prop.substring(1);
+            if (value === null)
+                return;
+            if (value === undefined)
+                return;
+            if (typeof value === "object") {
+                if (Object.keys(value).length === 0)
+                    return;
+            }
+            if (prop === "image") {
+                if (value.hasOwnProperty("radius")) {
+                    prop = "circle";
+                }
+                if (value.hasOwnProperty("points")) {
+                    prop = "star";
+                }
+            }
+            obj[prop] = value;
+        };
+        StyleConverter.prototype.serializeStyle = function (style) {
+            var _this = this;
+            var s = {};
+            if (!style)
+                return null;
+            if (typeof style === "string")
+                return style;
+            if (typeof style === "number")
+                return style;
+            if (style.getColor)
+                mixin(s, this.serializeColor(style.getColor()));
+            if (style.getImage)
+                this.assign(s, "image", this.serializeStyle(style.getImage()));
+            if (style.getFill)
+                this.assign(s, "fill", this.serializeFill(style.getFill()));
+            if (style.getOpacity)
+                this.assign(s, "opacity", style.getOpacity());
+            if (style.getStroke)
+                this.assign(s, "stroke", this.serializeStyle(style.getStroke()));
+            if (style.getText)
+                this.assign(s, "text", this.serializeStyle(style.getText()));
+            if (style.getWidth)
+                this.assign(s, "width", style.getWidth());
+            if (style.getOffsetX)
+                this.assign(s, "offset-x", style.getOffsetX());
+            if (style.getOffsetY)
+                this.assign(s, "offset-y", style.getOffsetY());
+            if (style.getWidth)
+                this.assign(s, "width", style.getWidth());
+            if (style.getFont)
+                this.assign(s, "font", style.getFont());
+            if (style.getRadius)
+                this.assign(s, "radius", style.getRadius());
+            if (style.getRadius2)
+                this.assign(s, "radius2", style.getRadius2());
+            if (style.getPoints)
+                this.assign(s, "points", style.getPoints());
+            if (style.getAngle)
+                this.assign(s, "angle", style.getAngle());
+            if (style.getRotation)
+                this.assign(s, "rotation", style.getRotation());
+            if (style.getOrigin)
+                this.assign(s, "origin", style.getOrigin());
+            if (style.getScale)
+                this.assign(s, "scale", style.getScale());
+            if (style.getSize)
+                this.assign(s, "size", style.getSize());
+            if (style.getAnchor) {
+                this.assign(s, "anchor", style.getAnchor());
+                "anchorXUnits,anchorYUnits,anchorOrigin".split(",").forEach(function (k) {
+                    _this.assign(s, k, style[k + "_"]);
+                });
+            }
+            // "svg"
+            if (style.path) {
+                if (style.path)
+                    this.assign(s, "path", style.path);
+                if (style.getImageSize)
+                    this.assign(s, "imgSize", style.getImageSize());
+                if (style.stroke)
+                    this.assign(s, "stroke", style.stroke);
+                if (style.fill)
+                    this.assign(s, "fill", style.fill);
+                if (style.scale)
+                    this.assign(s, "scale", style.scale); // getScale and getImgSize are modified in deserializer               
+                if (style.imgSize)
+                    this.assign(s, "imgSize", style.imgSize);
+            }
+            // "icon"
+            if (style.getSrc)
+                this.assign(s, "src", style.getSrc());
+            if (s.points && s.radius !== s.radius2)
+                s.points /= 2; // ol3 defect doubles point count when r1 <> r2  
+            return s;
+        };
+        StyleConverter.prototype.serializeColor = function (color) {
+            if (color instanceof Array) {
+                return {
+                    color: ol.color.asString(color)
+                };
+            }
+            else if (color instanceof CanvasGradient) {
+                return {
+                    gradient: color
+                };
+            }
+            else if (color instanceof CanvasPattern) {
+                return {
+                    pattern: color
+                };
+            }
+            else if (typeof color === "string") {
+                return {
+                    color: color
+                };
+            }
+            throw "unknown color type";
+        };
+        StyleConverter.prototype.serializeFill = function (fill) {
+            return this.serializeStyle(fill);
+        };
+        StyleConverter.prototype.deserializeStyle = function (json) {
+            var _this = this;
+            var image;
+            var text;
+            var fill;
+            var stroke;
+            if (json.circle)
+                image = this.deserializeCircle(json.circle);
+            else if (json.star)
+                image = this.deserializeStar(json.star);
+            else if (json.icon)
+                image = this.deserializeIcon(json.icon);
+            else if (json.svg)
+                image = this.deserializeSvg(json.svg);
+            else if (json.image && (json.image.img || json.image.path))
+                image = this.deserializeSvg(json.image);
+            else if (json.image && json.image.src)
+                image = this.deserializeIcon(json.image);
+            else if (json.image)
+                throw "unknown image type";
+            if (json.text)
+                text = this.deserializeText(json.text);
+            if (json.fill)
+                fill = this.deserializeFill(json.fill);
+            if (json.stroke)
+                stroke = this.deserializeStroke(json.stroke);
+            var s = new ol.style.Style({
+                image: image,
+                text: text,
+                fill: fill,
+                stroke: stroke
+            });
+            image && s.setGeometry(function (feature) { return _this.setGeometry(feature); });
+            return s;
+        };
+        StyleConverter.prototype.deserializeText = function (json) {
+            json.rotation = json.rotation || 0;
+            json.scale = json.scale || 1;
+            var _a = [json["offset-x"] || 0, json["offset-y"] || 0], x = _a[0], y = _a[1];
+            {
+                var p = new ol.geom.Point([x, y]);
+                p.rotate(json.rotation, [0, 0]);
+                p.scale(json.scale, json.scale);
+                _b = p.getCoordinates(), x = _b[0], y = _b[1];
+            }
+            return new ol.style.Text({
+                fill: json.fill && this.deserializeFill(json.fill),
+                stroke: json.stroke && this.deserializeStroke(json.stroke),
+                text: json.text,
+                font: json.font,
+                offsetX: x,
+                offsetY: y,
+                rotation: json.rotation,
+                scale: json.scale
+            });
+            var _b;
+        };
+        StyleConverter.prototype.deserializeCircle = function (json) {
+            var image = new ol.style.Circle({
+                radius: json.radius,
+                fill: json.fill && this.deserializeFill(json.fill),
+                stroke: json.stroke && this.deserializeStroke(json.stroke)
+            });
+            image.setOpacity(json.opacity);
+            return image;
+        };
+        StyleConverter.prototype.deserializeStar = function (json) {
+            var image = new ol.style.RegularShape({
+                radius: json.radius,
+                radius2: json.radius2,
+                points: json.points,
+                angle: json.angle,
+                fill: json.fill && this.deserializeFill(json.fill),
+                stroke: json.stroke && this.deserializeStroke(json.stroke)
+            });
+            doif(json.rotation, function (v) { return image.setRotation(v); });
+            doif(json.opacity, function (v) { return image.setOpacity(v); });
+            return image;
+        };
+        StyleConverter.prototype.deserializeIcon = function (json) {
+            if (!json.anchor) {
+                json.anchor = [json["anchor-x"] || 0.5, json["anchor-y"] || 0.5];
+            }
+            var image = new ol.style.Icon({
+                anchor: json.anchor || [0.5, 0.5],
+                anchorOrigin: json.anchorOrigin || "top-left",
+                anchorXUnits: json.anchorXUnits || "fraction",
+                anchorYUnits: json.anchorYUnits || "fraction",
+                //crossOrigin?: string;
+                img: undefined,
+                imgSize: undefined,
+                offset: json.offset,
+                offsetOrigin: json.offsetOrigin,
+                opacity: json.opacity,
+                scale: json.scale,
+                snapToPixel: json.snapToPixel,
+                rotateWithView: json.rotateWithView,
+                rotation: json.rotation,
+                size: json.size,
+                src: json.src,
+                color: json.color
+            });
+            image.load();
+            return image;
+        };
+        StyleConverter.prototype.deserializeSvg = function (json) {
+            json.rotation = json.rotation || 0;
+            json.scale = json.scale || 1;
+            if (json.img) {
+                var symbol = document.getElementById(json.img);
+                if (!symbol) {
+                    throw "unable to find svg element: " + json.img;
+                }
+                if (symbol) {
+                    // but just grab the path is probably good enough
+                    var path = (symbol.getElementsByTagName("path")[0]);
+                    if (path) {
+                        if (symbol.viewBox) {
+                            if (!json.imgSize) {
+                                json.imgSize = [symbol.viewBox.baseVal.width, symbol.viewBox.baseVal.height];
+                            }
+                        }
+                        json.path = (json.path || "") + path.getAttribute('d');
+                    }
+                }
+            }
+            var canvas = document.createElement("canvas");
+            if (json.path) {
+                {
+                    // rotate a rectangle and get the resulting extent
+                    _a = json.imgSize.map(function (v) { return v * json.scale; }), canvas.width = _a[0], canvas.height = _a[1];
+                    if (json.stroke && json.stroke.width) {
+                        var dx = 2 * json.stroke.width * json.scale;
+                        canvas.width += dx;
+                        canvas.height += dx;
+                    }
+                }
+                var ctx = canvas.getContext('2d');
+                var path2d = new Path2D(json.path);
+                // rotate  before it is in the canvas (avoids pixelation)
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.scale(json.scale, json.scale);
+                ctx.translate(-json.imgSize[0] / 2, -json.imgSize[1] / 2);
+                if (json.fill) {
+                    ctx.fillStyle = json.fill.color;
+                    ctx.fill(path2d);
+                }
+                if (json.stroke) {
+                    ctx.strokeStyle = json.stroke.color;
+                    ctx.lineWidth = json.stroke.width;
+                    ctx.stroke(path2d);
+                }
+            }
+            var icon = new ol.style.Icon({
+                img: canvas,
+                imgSize: [canvas.width, canvas.height],
+                rotation: json.rotation,
+                scale: 1,
+                anchor: json.anchor || [canvas.width / 2, canvas.height],
+                anchorOrigin: json.anchorOrigin,
+                anchorXUnits: json.anchorXUnits || "pixels",
+                anchorYUnits: json.anchorYUnits || "pixels",
+                //crossOrigin?: string;
+                offset: json.offset,
+                offsetOrigin: json.offsetOrigin,
+                opacity: json.opacity,
+                snapToPixel: json.snapToPixel,
+                rotateWithView: json.rotateWithView,
+                size: [canvas.width, canvas.height],
+                src: undefined
+            });
+            return mixin(icon, {
+                path: json.path,
+                stroke: json.stroke,
+                fill: json.fill,
+                scale: json.scale,
+                imgSize: json.imgSize
+            });
+            var _a;
+        };
+        StyleConverter.prototype.deserializeFill = function (json) {
+            var fill = new ol.style.Fill({
+                color: json && this.deserializeColor(json)
+            });
+            return fill;
+        };
+        StyleConverter.prototype.deserializeStroke = function (json) {
+            var stroke = new ol.style.Stroke();
+            doif(json.color, function (v) { return stroke.setColor(v); });
+            doif(json.lineCap, function (v) { return stroke.setLineCap(v); });
+            doif(json.lineDash, function (v) { return stroke.setLineDash(v); });
+            doif(json.lineJoin, function (v) { return stroke.setLineJoin(v); });
+            doif(json.miterLimit, function (v) { return stroke.setMiterLimit(v); });
+            doif(json.width, function (v) { return stroke.setWidth(v); });
+            return stroke;
+        };
+        StyleConverter.prototype.deserializeColor = function (fill) {
+            if (fill.color) {
+                return fill.color;
+            }
+            if (fill.gradient) {
+                var type = fill.gradient.type;
+                var gradient_1;
+                if (0 === type.indexOf("linear(")) {
+                    gradient_1 = this.deserializeLinearGradient(fill.gradient);
+                }
+                else if (0 === type.indexOf("radial(")) {
+                    gradient_1 = this.deserializeRadialGradient(fill.gradient);
+                }
+                if (fill.gradient.stops) {
+                    // preserve
+                    mixin(gradient_1, {
+                        stops: fill.gradient.stops
+                    });
+                    var stops = fill.gradient.stops.split(";");
+                    stops = stops.map(function (v) { return v.trim(); });
+                    stops.forEach(function (colorstop) {
+                        var stop = colorstop.match(/ \d+%/m)[0];
+                        var color = colorstop.substr(0, colorstop.length - stop.length);
+                        gradient_1.addColorStop(parseInt(stop) / 100, color);
+                    });
+                }
+                return gradient_1;
+            }
+            if (fill.pattern) {
+                var repitition = fill.pattern.repitition;
+                var canvas = document.createElement('canvas');
+                var spacing = canvas.width = canvas.height = fill.pattern.spacing | 6;
+                var context = canvas.getContext('2d');
+                context.fillStyle = fill.pattern.color;
+                switch (fill.pattern.orientation) {
+                    case "horizontal":
+                        for (var i = 0; i < spacing; i++) {
+                            context.fillRect(i, 0, 1, 1);
+                        }
+                        break;
+                    case "vertical":
+                        for (var i = 0; i < spacing; i++) {
+                            context.fillRect(0, i, 1, 1);
+                        }
+                        break;
+                    case "cross":
+                        for (var i = 0; i < spacing; i++) {
+                            context.fillRect(i, 0, 1, 1);
+                            context.fillRect(0, i, 1, 1);
+                        }
+                        break;
+                    case "forward":
+                        for (var i = 0; i < spacing; i++) {
+                            context.fillRect(i, i, 1, 1);
+                        }
+                        break;
+                    case "backward":
+                        for (var i = 0; i < spacing; i++) {
+                            context.fillRect(spacing - 1 - i, i, 1, 1);
+                        }
+                        break;
+                    case "diagonal":
+                        for (var i = 0; i < spacing; i++) {
+                            context.fillRect(i, i, 1, 1);
+                            context.fillRect(spacing - 1 - i, i, 1, 1);
+                        }
+                        break;
+                }
+                return mixin(context.createPattern(canvas, repitition), fill.pattern);
+            }
+            throw "invalid color configuration";
+        };
+        StyleConverter.prototype.deserializeLinearGradient = function (json) {
+            var rx = /\w+\((.*)\)/m;
+            var _a = JSON.parse(json.type.replace(rx, "[$1]")), x0 = _a[0], y0 = _a[1], x1 = _a[2], y1 = _a[3];
+            var canvas = document.createElement('canvas');
+            // not correct, assumes points reside on edge
+            canvas.width = Math.max(x0, x1);
+            canvas.height = Math.max(y0, y1);
+            var context = canvas.getContext('2d');
+            var gradient = context.createLinearGradient(x0, y0, x1, y1);
+            mixin(gradient, {
+                type: "linear(" + [x0, y0, x1, y1].join(",") + ")"
+            });
+            return gradient;
+        };
+        StyleConverter.prototype.deserializeRadialGradient = function (json) {
+            var rx = /radial\((.*)\)/m;
+            var _a = JSON.parse(json.type.replace(rx, "[$1]")), x0 = _a[0], y0 = _a[1], r0 = _a[2], x1 = _a[3], y1 = _a[4], r1 = _a[5];
+            var canvas = document.createElement('canvas');
+            // not correct, assumes radial centered
+            canvas.width = 2 * Math.max(x0, x1);
+            canvas.height = 2 * Math.max(y0, y1);
+            var context = canvas.getContext('2d');
+            var gradient = context.createRadialGradient(x0, y0, r0, x1, y1, r1);
+            mixin(gradient, {
+                type: "radial(" + [x0, y0, r0, x1, y1, r1].join(",") + ")"
+            });
+            return gradient;
+        };
+        return StyleConverter;
+    }());
+    exports.StyleConverter = StyleConverter;
+});
+define("bower_components/ol3-symbolizer/ol3-symbolizer/format/ags-symbolizer", ["require", "exports", "bower_components/ol3-symbolizer/ol3-symbolizer/format/ol3-symbolizer"], function (require, exports, Symbolizer) {
+    "use strict";
+    var symbolizer = new Symbolizer.StyleConverter();
+    // esri -> ol mappings
+    var styleMap = {
+        "esriSMSCircle": "circle",
+        "esriSMSDiamond": "diamond",
+        "esriSMSX": "x",
+        "esriSMSCross": "cross",
+        "esriSLSSolid": "solid",
+        "esriSFSSolid": "solid",
+        "esriSLSDot": "dot",
+        "esriSLSDash": "dash",
+        "esriSLSDashDot": "dashdot",
+        "esriSLSDashDotDot": "dashdotdot",
+        "esriSFSForwardDiagonal": "forward-diagonal",
+    };
+    // esri -> ol mappings
+    var typeMap = {
+        "esriSMS": "sms",
+        "esriSLS": "sls",
+        "esriSFS": "sfs",
+        "esriPMS": "pms",
+        "esriPFS": "pfs",
+        "esriTS": "txt",
+    };
+    function range(a, b) {
+        var result = new Array(b - a + 1);
+        while (a <= b)
+            result.push(a++);
+        return result;
+    }
+    function clone(o) {
+        return JSON.parse(JSON.stringify(o));
+    }
+    // convert from ags style to an internal format
+    var StyleConverter = (function () {
+        function StyleConverter() {
+        }
+        StyleConverter.prototype.asWidth = function (v) {
+            return v * 4 / 3; // not sure why
+        };
+        // see ol.color.asString
+        StyleConverter.prototype.asColor = function (color) {
+            if (color.length === 4)
+                return "rgba(" + color[0] + "," + color[1] + "," + color[2] + "," + color[3] / 255 + ")";
+            if (color.length === 3)
+                return "rgb(" + color[0] + "," + color[1] + "," + color[2] + "})";
+            return "#" + color.map(function (v) { return ("0" + v.toString(16)).substr(0, 2); }).join("");
+        };
+        StyleConverter.prototype.fromSFSSolid = function (symbol, style) {
+            style.fill = {
+                color: this.asColor(symbol.color)
+            };
+            this.fromSLS(symbol.outline, style);
+        };
+        StyleConverter.prototype.fromSFS = function (symbol, style) {
+            switch (symbol.style) {
+                case "esriSFSSolid":
+                    this.fromSFSSolid(symbol, style);
+                    break;
+                case "esriSFSForwardDiagonal":
+                    this.fromSFSSolid(symbol, style);
+                    break;
+                default:
+                    throw "invalid-style: " + symbol.style;
+            }
+        };
+        StyleConverter.prototype.fromSMSCircle = function (symbol, style) {
+            style.circle = {
+                opacity: 1,
+                radius: this.asWidth(symbol.size / 2),
+                stroke: {
+                    color: this.asColor(symbol.outline.color),
+                },
+                snapToPixel: true
+            };
+            this.fromSFSSolid(symbol, style.circle);
+            this.fromSLS(symbol.outline, style.circle);
+        };
+        StyleConverter.prototype.fromSMSCross = function (symbol, style) {
+            style.star = {
+                points: 4,
+                angle: 0,
+                radius: this.asWidth(symbol.size / Math.sqrt(2)),
+                radius2: 0
+            };
+            this.fromSFSSolid(symbol, style.star);
+            this.fromSLS(symbol.outline, style.star);
+        };
+        StyleConverter.prototype.fromSMSDiamond = function (symbol, style) {
+            style.star = {
+                points: 4,
+                angle: 0,
+                radius: this.asWidth(symbol.size / Math.sqrt(2)),
+                radius2: this.asWidth(symbol.size / Math.sqrt(2))
+            };
+            this.fromSFSSolid(symbol, style.star);
+            this.fromSLS(symbol.outline, style.star);
+        };
+        StyleConverter.prototype.fromSMSPath = function (symbol, style) {
+            var size = 2 * this.asWidth(symbol.size);
+            style.svg = {
+                imgSize: [size, size],
+                path: symbol.path,
+                rotation: symbol.angle
+            };
+            this.fromSLSSolid(symbol, style.svg);
+            this.fromSLS(symbol.outline, style.svg);
+        };
+        StyleConverter.prototype.fromSMSSquare = function (symbol, style) {
+            style.star = {
+                points: 4,
+                angle: Math.PI / 4,
+                radius: this.asWidth(symbol.size / Math.sqrt(2)),
+                radius2: this.asWidth(symbol.size / Math.sqrt(2))
+            };
+            this.fromSFSSolid(symbol, style.star);
+            this.fromSLS(symbol.outline, style.star);
+        };
+        StyleConverter.prototype.fromSMSX = function (symbol, style) {
+            style.star = {
+                points: 4,
+                angle: Math.PI / 4,
+                radius: this.asWidth(symbol.size / Math.sqrt(2)),
+                radius2: 0
+            };
+            this.fromSFSSolid(symbol, style.star);
+            this.fromSLS(symbol.outline, style.star);
+        };
+        StyleConverter.prototype.fromSMS = function (symbol, style) {
+            switch (symbol.style) {
+                case "esriSMSCircle":
+                    this.fromSMSCircle(symbol, style);
+                    break;
+                case "esriSMSCross":
+                    this.fromSMSCross(symbol, style);
+                    break;
+                case "esriSMSDiamond":
+                    this.fromSMSDiamond(symbol, style);
+                    break;
+                case "esriSMSPath":
+                    this.fromSMSPath(symbol, style);
+                    break;
+                case "esriSMSSquare":
+                    this.fromSMSSquare(symbol, style);
+                    break;
+                case "esriSMSX":
+                    this.fromSMSX(symbol, style);
+                    break;
+                default:
+                    throw "invalid-style: " + symbol.style;
+            }
+        };
+        StyleConverter.prototype.fromPMS = function (symbol, style) {
+            style.image = {};
+            style.image.src = symbol.url;
+            if (symbol.imageData) {
+                style.image.src = "data:image/png;base64," + symbol.imageData;
+            }
+            style.image["anchor-x"] = this.asWidth(symbol.xoffset);
+            style.image["anchor-y"] = this.asWidth(symbol.yoffset);
+            style.image.imgSize = [this.asWidth(symbol.width), this.asWidth(symbol.height)];
+        };
+        StyleConverter.prototype.fromSLSSolid = function (symbol, style) {
+            style.stroke = {
+                color: this.asColor(symbol.color),
+                width: this.asWidth(symbol.width),
+                lineDash: [],
+                lineJoin: "",
+                miterLimit: 4
+            };
+        };
+        StyleConverter.prototype.fromSLS = function (symbol, style) {
+            switch (symbol.style) {
+                case "esriSLSSolid":
+                    this.fromSLSSolid(symbol, style);
+                    break;
+                case "esriSLSDot":
+                    this.fromSLSSolid(symbol, style);
+                    break;
+                case "esriSLSDash":
+                    this.fromSLSSolid(symbol, style);
+                    break;
+                case "esriSLSDashDot":
+                    this.fromSLSSolid(symbol, style);
+                    break;
+                case "esriSLSDashDotDot":
+                    this.fromSLSSolid(symbol, style);
+                    break;
+                default:
+                    this.fromSLSSolid(symbol, style);
+                    console.warn("invalid-style: " + symbol.style);
+                    break;
+            }
+        };
+        StyleConverter.prototype.fromPFS = function (symbol, style) {
+            throw "not-implemented";
+        };
+        StyleConverter.prototype.fromTS = function (symbol, style) {
+            throw "not-implemented";
+        };
+        StyleConverter.prototype.fromJson = function (symbol) {
+            var style = {};
+            this.fromSymbol(symbol, style);
+            return symbolizer.fromJson(style);
+        };
+        StyleConverter.prototype.fromSymbol = function (symbol, style) {
+            switch (symbol.type) {
+                case "esriSFS":
+                    this.fromSFS(symbol, style);
+                    break;
+                case "esriSLS":
+                    this.fromSLS(symbol, style);
+                    break;
+                case "esriPMS":
+                    this.fromPMS(symbol, style);
+                    break;
+                case "esriPFS":
+                    this.fromPFS(symbol, style);
+                    break;
+                case "esriSMS":
+                    this.fromSMS(symbol, style);
+                    break;
+                case "esriTS":
+                    this.fromTS(symbol, style);
+                    break;
+                default:
+                    throw "invalid-symbol-type: " + symbol.type;
+            }
+        };
+        // convert drawing info into a symbology rule
+        StyleConverter.prototype.fromRenderer = function (renderer, args) {
+            var _this = this;
+            switch (renderer.type) {
+                case "simple":
+                    {
+                        return this.fromJson(renderer.symbol);
+                    }
+                case "uniqueValue":
+                    {
+                        var styles_1 = {};
+                        var defaultStyle_1 = (renderer.defaultSymbol) && this.fromJson(renderer.defaultSymbol);
+                        if (renderer.uniqueValueInfos) {
+                            renderer.uniqueValueInfos.forEach(function (info) {
+                                styles_1[info.value] = _this.fromJson(info.symbol);
+                            });
+                        }
+                        return function (feature) { return styles_1[feature.get(renderer.field1)] || defaultStyle_1; };
+                    }
+                case "classBreaks": {
+                    var styles_2 = {};
+                    var classBreakRenderer_1 = renderer;
+                    if (classBreakRenderer_1.classBreakInfos) {
+                        console.log("processing classBreakInfos");
+                        if (classBreakRenderer_1.visualVariables) {
+                            classBreakRenderer_1.visualVariables.forEach(function (vars) {
+                                switch (vars.type) {
+                                    /**
+                                     * This renderer adjusts the size of the symbol to between [minSize..maxSize]
+                                     * based on the range of values [minDataValue, maxDataValue]
+                                     */
+                                    case "sizeInfo": {
+                                        var steps_1 = range(classBreakRenderer_1.authoringInfo.visualVariables[0].minSliderValue, classBreakRenderer_1.authoringInfo.visualVariables[0].maxSliderValue);
+                                        var dx_1 = (vars.maxSize - vars.minSize) / steps_1.length;
+                                        var dataValue_1 = (vars.maxDataValue - vars.minDataValue) / steps_1.length;
+                                        classBreakRenderer_1.classBreakInfos.forEach(function (classBreakInfo) {
+                                            var icons = steps_1.map(function (step) {
+                                                var json = $.extend({}, classBreakInfo.symbol);
+                                                json.size = vars.minSize + dx_1 * (dataValue_1 - vars.minDataValue);
+                                                var style = _this.fromJson(json);
+                                                styles_2[dataValue_1] = style;
+                                            });
+                                        });
+                                        debugger;
+                                        break;
+                                    }
+                                    default:
+                                        debugger;
+                                        break;
+                                }
+                            });
+                        }
+                    }
+                    return function (feature) {
+                        debugger;
+                        var value = feature.get(renderer.field1);
+                        for (var key in styles_2) {
+                            // TODO: scan until key > value, return prior style
+                            return styles_2[key];
+                        }
+                    };
+                }
+                default:
+                    {
+                        debugger;
+                        console.error("unsupported renderer type: ", renderer.type);
+                        break;
+                    }
+            }
+        };
+        return StyleConverter;
+    }());
+    exports.StyleConverter = StyleConverter;
+});
+define("bower_components/ol3-symbolizer/ol3-symbolizer/common/common", ["require", "exports"], function (require, exports) {
+    "use strict";
+    function getParameterByName(name, url) {
+        if (url === void 0) { url = window.location.href; }
+        name = name.replace(/[\[\]]/g, "\\$&");
+        var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"), results = regex.exec(url);
+        if (!results)
+            return null;
+        if (!results[2])
+            return '';
+        return decodeURIComponent(results[2].replace(/\+/g, " "));
+    }
+    exports.getParameterByName = getParameterByName;
+    function doif(v, cb) {
+        if (v !== undefined && v !== null)
+            cb(v);
+    }
+    exports.doif = doif;
+    function mixin(a, b) {
+        Object.keys(b).forEach(function (k) { return a[k] = b[k]; });
+        return a;
+    }
+    exports.mixin = mixin;
+    function defaults(a, b) {
+        Object.keys(b).filter(function (k) { return a[k] == undefined; }).forEach(function (k) { return a[k] = b[k]; });
+        return a;
+    }
+    exports.defaults = defaults;
+    function cssin(name, css) {
+        var id = "style-" + name;
+        var styleTag = document.getElementById(id);
+        if (!styleTag) {
+            styleTag = document.createElement("style");
+            styleTag.id = id;
+            styleTag.innerText = css;
+            document.head.appendChild(styleTag);
+        }
+        var dataset = styleTag.dataset;
+        dataset["count"] = parseInt(dataset["count"] || "0") + 1 + "";
+        return function () {
+            dataset["count"] = parseInt(dataset["count"] || "0") - 1 + "";
+            if (dataset["count"] === "0") {
+                styleTag.remove();
+            }
+        };
+    }
+    exports.cssin = cssin;
+});
+/**
+ * See https://openlayers.org/en/latest/examples/vector-esri.html
+ * Ultimately this will only query for features it does not already have
+ * It will make use the map SRS and the resulttype="tile" and exceededTransferLimit
+ * See https://github.com/ca0v/ol3-lab/issues/4
+ */
+define("bower_components/ol3-symbolizer/ol3-symbolizer/ags/ags-source", ["require", "exports", "jquery", "openlayers", "bower_components/ol3-symbolizer/ol3-symbolizer/ags/ags-catalog", "bower_components/ol3-symbolizer/ol3-symbolizer/format/ags-symbolizer", "bower_components/ol3-symbolizer/ol3-symbolizer/common/common"], function (require, exports, $, ol, AgsCatalog, Symbolizer, common_2) {
+    "use strict";
+    var esrijsonFormat = new ol.format.EsriJSON();
+    function asParam(options) {
+        return Object
+            .keys(options)
+            .map(function (k) { return k + "=" + options[k]; })
+            .join("&");
+    }
+    ;
+    var DEFAULT_OPTIONS = {
+        tileSize: 512,
+        where: "1=1"
+    };
+    var ArcGisVectorSourceFactory = (function () {
+        function ArcGisVectorSourceFactory() {
+        }
+        ArcGisVectorSourceFactory.create = function (options) {
+            var d = $.Deferred();
+            options = common_2.defaults(options, DEFAULT_OPTIONS);
+            var srs = options.map.getView()
+                .getProjection()
+                .getCode()
+                .split(":")
+                .pop();
+            var all = options.layers.map(function (layerId) {
+                var d = $.Deferred();
+                var tileGrid = ol.tilegrid.createXYZ({
+                    tileSize: options.tileSize
+                });
+                var strategy = ol.loadingstrategy.tile(tileGrid);
+                var loader = function (extent, resolution, projection) {
+                    var box = {
+                        xmin: extent[0],
+                        ymin: extent[1],
+                        xmax: extent[2],
+                        ymax: extent[3]
+                    };
+                    var params = {
+                        f: "json",
+                        returnGeometry: true,
+                        spatialRel: "esriSpatialRelIntersects",
+                        geometry: encodeURIComponent(JSON.stringify(box)),
+                        geometryType: "esriGeometryEnvelope",
+                        resultType: "tile",
+                        where: encodeURIComponent(options.where),
+                        inSR: srs,
+                        outSR: srs,
+                        outFields: "*",
+                    };
+                    var query = options.services + "/" + options.serviceName + "/FeatureServer/" + layerId + "/query?" + asParam(params);
+                    $.ajax({
+                        url: query,
+                        dataType: 'jsonp',
+                        success: function (response) {
+                            if (response.error) {
+                                alert(response.error.message + '\n' +
+                                    response.error.details.join('\n'));
+                            }
+                            else {
+                                // dataProjection will be read from document
+                                var features = esrijsonFormat.readFeatures(response, {
+                                    featureProjection: projection,
+                                    dataProjection: projection
+                                });
+                                if (features.length > 0) {
+                                    source.addFeatures(features);
+                                }
+                            }
+                        }
+                    });
+                };
+                var source = new ol.source.Vector({
+                    strategy: strategy,
+                    loader: loader
+                });
+                var catalog = new AgsCatalog.Catalog(options.services + "/" + options.serviceName + "/FeatureServer");
+                var converter = new Symbolizer.StyleConverter();
+                catalog.aboutLayer(layerId).then(function (layerInfo) {
+                    var layer = new ol.layer.Vector({
+                        title: layerInfo.name,
+                        source: source
+                    });
+                    var styleMap = converter.fromRenderer(layerInfo.drawingInfo.renderer, { url: "for icons?" });
+                    layer.setStyle(function (feature, resolution) {
+                        if (styleMap instanceof ol.style.Style) {
+                            return styleMap;
+                        }
+                        else {
+                            return styleMap(feature);
+                        }
+                    });
+                    d.resolve(layer);
+                });
+                return d;
+            });
+            $.when.apply($, all).then(function () {
+                var args = [];
+                for (var _i = 0; _i < arguments.length; _i++) {
+                    args[_i] = arguments[_i];
+                }
+                return d.resolve(args);
+            });
+            return d;
+        };
+        return ArcGisVectorSourceFactory;
+    }());
+    exports.ArcGisVectorSourceFactory = ArcGisVectorSourceFactory;
+});
+define("bower_components/ol3-symbolizer/index", ["require", "exports", "bower_components/ol3-symbolizer/ol3-symbolizer/format/ol3-symbolizer"], function (require, exports, Symbolizer) {
+    "use strict";
+    return Symbolizer;
+});
+define("ol3-mapquest/examples/mapmaker", ["require", "exports", "openlayers", "bower_components/ol3-grid/index", "bower_components/ol3-symbolizer/ol3-symbolizer/ags/ags-source", "bower_components/ol3-symbolizer/index", "bower_components/ol3-fun/index"], function (require, exports, ol, ol3_grid_1, ags_source_1, ol3_symbolizer_1, ol3_fun_3) {
+    "use strict";
+    function create() {
+        var center = ol.proj.transform([-120, 35], 'EPSG:4326', 'EPSG:3857');
+        var mapContainer = document.getElementsByClassName("map")[0];
+        var map = new ol.Map({
+            loadTilesWhileAnimating: true,
+            target: mapContainer,
+            layers: [
+                new ol.layer.Tile({
+                    source: new ol.source.OSM(),
+                    opacity: 0.8
+                })
+            ],
+            view: new ol.View({
+                center: center,
+                projection: 'EPSG:3857',
+                zoom: 6
+            })
+        });
+        var source = new ol.source.Vector();
+        var symbolizer = new ol3_symbolizer_1.StyleConverter();
+        var vector = new ol.layer.Vector({
+            source: source,
+            style: function (feature, resolution) {
+                var style = feature.getStyle();
+                if (!style) {
+                    switch (feature.getGeometry().getType()) {
+                        case "Point":
+                            style = symbolizer.fromJson({
+                                circle: {
+                                    radius: 4,
+                                    fill: {
+                                        color: "rgba(33, 33, 33, 0.2)"
+                                    },
+                                    stroke: {
+                                        color: "#F00"
+                                    }
+                                },
+                                text: {
+                                    text: feature.get("text")
+                                }
+                            });
+                            break;
+                        case "LineString":
+                            style = symbolizer.fromJson({
+                                fill: {
+                                    color: "rgba(33, 33, 33, 0.2)"
+                                },
+                                stroke: {
+                                    color: "#F00"
+                                },
+                                text: {
+                                    text: feature.get("text")
+                                }
+                            });
+                            break;
+                        default:
+                            debugger;
+                            style = symbolizer.fromJson({
+                                fill: {
+                                    color: "rgba(33, 33, 33, 0.2)"
+                                },
+                                stroke: {
+                                    color: "#F00"
+                                },
+                                circle: {
+                                    radius: 4,
+                                    fill: {
+                                        color: "rgba(33, 33, 33, 0.2)"
+                                    },
+                                    stroke: {
+                                        color: "#F00"
+                                    }
+                                },
+                                text: {
+                                    text: feature.get("text")
+                                }
+                            });
+                            break;
+                    }
+                    feature.setStyle(style);
+                }
+                return style;
+            }
+        });
+        ags_source_1.ArcGisVectorSourceFactory.create({
+            map: map,
+            services: 'https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services',
+            serviceName: 'USA_States_Generalized',
+            layers: [0]
+        }).then(function (layers) {
+            layers.forEach(function (layer) {
+                layer.setStyle(function (feature, resolution) {
+                    var style = feature.getStyle();
+                    if (!style) {
+                        style = symbolizer.fromJson({
+                            fill: {
+                                color: "rgba(200,200,200,0.5)"
+                            },
+                            stroke: {
+                                color: "rgba(33,33,33,0.8)",
+                                width: 3
+                            },
+                            text: {
+                                text: feature.get("STATE_ABBR")
+                            }
+                        });
+                        feature.setStyle(style);
+                    }
+                    return style;
+                });
+                map.getLayers().insertAt(0, layer);
+                var grid = ol3_grid_1.Grid.create({
+                    map: map,
+                    className: "ol-grid",
+                    position: "statecode top left-2",
+                    expanded: true,
+                    currentExtent: true,
+                    autoCollapse: true,
+                    // we do it ourselves
+                    autoPan: false,
+                    showIcon: true,
+                    layers: [layer]
+                });
+                grid.on("feature-click", function (args) {
+                    ol3_fun_3.navigation.zoomToFeature(map, args.feature);
+                });
+                grid.on("feature-hover", function (args) {
+                    // TODO: highlight args.feature
+                });
+            });
+        }).then(function () {
+            map.addLayer(vector);
+        });
+        return {
+            map: map,
+            source: source
+        };
+    }
+    exports.create = create;
+});
+define("ol3-mapquest/examples/directions", ["require", "exports", "openlayers", "ol3-mapquest/examples/mapmaker"], function (require, exports, ol, mapmaker_1) {
+    "use strict";
+    function run() {
+        var _a = mapmaker_1.create(), map = _a.map, source = _a.source;
+        var outSrs = map.getView().getProjection();
+        var reader = new ol.format.WKT();
+        function findStop(coordinate, cb) {
+            var lon = coordinate[0], lat = coordinate[1];
+            fetch("http://localhost:3000/routing/closest?lat=" + lat + "&lon=" + lon).then(function (response) {
+                response.json().then(function (data) {
+                    if (!data.length)
+                        return;
+                    var geom = reader.readGeometry(data[0].geom);
+                    geom.transform("EPSG:4326", outSrs);
+                    source.addFeature(new ol.Feature(geom));
+                    cb(data[0].id);
+                });
+            });
+        }
+        function addRoute(stop1, stop2) {
+            fetch("http://localhost:3000/routing/route?stops=" + stop1 + "," + stop2).then(function (response) {
+                response.json().then(function (data) {
+                    var route = data.route;
+                    var linestrings = route.map(function (r) { return r.geom; });
+                    var geoms = linestrings.map(function (g) { return reader.readGeometry(g); });
+                    geoms.forEach(function (g) { return g.transform("EPSG:4326", outSrs); });
+                    geoms.forEach(function (g) { return source.addFeature(new ol.Feature(g)); });
+                });
+            });
+        }
+        fetch("http://localhost:3000/routing/route?stops=4,10").then(function (response) {
+            response.json().then(function (data) {
+                var reader = new ol.format.WKT();
+                var route = data.route;
+                var linestrings = route.map(function (r) { return r.geom; });
+                var geoms = linestrings.map(function (g) { return reader.readGeometry(g); });
+                geoms.forEach(function (g) { return g.transform("EPSG:4326", outSrs); });
+                geoms.forEach(function (g) { return source.addFeature(new ol.Feature(g)); });
+            });
+        });
+        var priorStop = null;
+        map.on("click", function (args) {
+            var point = new ol.geom.Point(args.coordinate);
+            point.transform("EPSG:3857", "EPSG:4326");
+            findStop(point.getCoordinates(), function (currentStop) {
+                if (!currentStop)
+                    return;
+                if (priorStop) {
+                    addRoute(priorStop, currentStop);
+                }
+                priorStop = currentStop;
+            });
+        });
+    }
+    exports.run = run;
+});
 define("ol3-mapquest/examples/index", ["require", "exports"], function (require, exports) {
     "use strict";
     function run() {
         var l = window.location;
         var path = "" + l.origin + l.pathname + "?run=ol3-mapquest/examples/";
-        var labs = "\n    index\n    ";
+        var labs = "\n    index\n    directions\n    ";
         var styles = document.createElement("style");
         document.head.appendChild(styles);
         styles.innerText += "\n    #map {\n        display: none;\n    }\n    .test {\n        margin: 20px;\n    }\n    ";
@@ -733,6 +2301,12 @@ define("ol3-mapquest/examples/index", ["require", "exports"], function (require,
 define("ol3-mapquest/tests/directions", ["require", "exports", "ol3-mapquest/directions-proxy"], function (require, exports, directions_proxy_2) {
     "use strict";
     var MapQuestKey = "cwm3pF5yuEGNp54sh96TF0irs5kCLd5y";
+    var serviceUrl = "//www.mapquestapi.com/directions/v2/route";
+    var SAMPLE_ERROR = {
+        "copyright": { "text": "© 2017 MapQuest, Inc.", "imageUrl": "http://api.mqcdn.com/res/mqlogo.gif", "imageAltText": "© 2017 MapQuest, Inc." },
+        "statuscode": 602,
+        "messages": ["Unable to calculate route."]
+    };
     function run(options) {
         if (!options) {
             options = {
@@ -740,13 +2314,13 @@ define("ol3-mapquest/tests/directions", ["require", "exports", "ol3-mapquest/dir
                 to: "550 S Main St 101, Greenville, SC 29601"
             };
         }
-        var serviceUrl = "http://www.mapquestapi.com/directions/v2/route";
-        var request = {
-            key: MapQuestKey,
+        return directions_proxy_2.MapQuestDirections.create({
+            url: serviceUrl,
+            key: MapQuestKey
+        }).directions({
             from: options.from,
             to: options.to
-        };
-        return new directions_proxy_2.MapQuestDirections().directions(serviceUrl, request).then(function (result) {
+        }).then(function (result) {
             console.log("directions", result);
             result.route.legs.forEach(function (leg) {
                 console.log(leg.destNarrative, leg.maneuvers.map(function (m) { return m.narrative; }).join("\n\t"));

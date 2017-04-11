@@ -3,6 +3,7 @@ export function run() {
     let path = `${l.origin}${l.pathname}?run=ol3-mapquest/examples/`;
     let labs = `
     index
+    directions
     `;
 
     let styles = document.createElement("style");

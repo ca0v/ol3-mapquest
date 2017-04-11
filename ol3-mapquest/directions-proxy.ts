@@ -1,4 +1,6 @@
 import * as $ from "jquery";
+import { defaults } from "ol3-fun";
+
 /**
  * http://www.mapquestapi.com/directions/v2/route?key=cwm3pF5yuEGNp54sh96TF0irs5kCLd5y&from=Lancaster,PA&to=York,PA&callback=define
  * http://www.mapquestapi.com/directions/v2/route?key=cwm3pF5yuEGNp54sh96TF0irs5kCLd5y?from=Lancaster,PA&to=York,PA&callback=define
@@ -214,19 +216,25 @@ export module MapQuestDirections {
 
 }
 
+export interface MapQuestDirectionsOptions {
+    key: string;
+    url?: string;
+}
+
 export class MapQuestDirections {
 
-    public static DEFAULT_OPTIONS = {
+    public static DEFAULT_OPTIONS = <MapQuestDirectionsOptions>{
         url: '//www.mapquestapi.com/directions/v2/route',
         key: '[YOUR-MAPQUEST-API-KEY]'
     }
 
-    static create(options: typeof MapQuestDirections.DEFAULT_OPTIONS) {
+    static create(options: MapQuestDirectionsOptions) {
         return new MapQuestDirections(options);
     }
 
-    private constructor(public options = MapQuestDirections.DEFAULT_OPTIONS) {
-
+    public options: MapQuestDirectionsOptions;
+    private constructor(options: MapQuestDirectionsOptions) {
+        this.options = defaults(options, MapQuestDirections.DEFAULT_OPTIONS);
     }
 
     private sessionId = "";
@@ -238,7 +246,7 @@ export class MapQuestDirections {
         avoids?: string;
     }) {
 
-        let req = $.extend({
+        let req = defaults(data, {
             key: this.options.key,
             outFormat: "json",
             unit: "m",
@@ -264,10 +272,9 @@ export class MapQuestDirections {
             generalize: 10,
             drivingStyle: "normal",
             highwayEfficiency: 20,
-            manMaps: false
-        }, data);
-
-        if (this.sessionId) req.sessionId = this.sessionId;
+            manMaps: false,
+            //sessionId: this.sessionId
+        });
 
         return mapquest<MapQuestDirections.Response>(this.options.url, req).then(response => {
             this.sessionId = response.route.sessionId;
