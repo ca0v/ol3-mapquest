@@ -1,0 +1,46 @@
+{
+  "name": "ol3-mapquest",
+  "description": "MapQuest APIs for OpenLayers",
+  "homepage": "https://github.com/ca0v/ol3-mapquest",
+  "main": [
+    "index.ts",
+    "built/index.js"
+  ],
+  "devDependencies": {
+    "ol3-symbolizer": "git://github.com/ca0v/ol3-symbolizer.git#v4.0.1",
+    "ol3-input": "git://github.com/ca0v/ol3-input.git#v4.0.1",
+    "ol3-grid": "git://github.com/ca0v/ol3-grid.git#v4.0.1"
+  },
+  "dependencies": {
+    "openlayers": "https://github.com/openlayers/openlayers/releases/download/v4.0.1/v4.0.1-dist.zip",
+    "requirejs": "^2.3.2",
+    "ol3-fun": "git://github.com/ca0v/ol3-fun.git#v4.0.1"
+  },
+  "moduleType": [
+    "amd"
+  ],
+  "keywords": [
+    "openlayers",
+    "search",
+    "control"
+  ],
+  "authors": [
+    "Corey Alix <coreyalix@outlook.com>"
+  ],
+  "license": "MIT",
+  "ignore": [
+    "**/.*",
+    "bower_components",
+    "typings",
+    "ol3-mapquest/examples",
+    "ol3-mapquest/tests",
+    "*.html",
+    "*.md",
+    "*.yml"
+  ],
+  "private": true,
+  "typescript": {
+    "definition": "built/index.d.ts"
+  },
+  "version": "4.0.1"
+}
